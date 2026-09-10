@@ -83,7 +83,7 @@ resource "aws_ssm_parameter" "mq_application_password" {
 }
 
 resource "aws_mq_broker" "default" {
-  count                      = local.enabled ? 1 : 0
+  count                      = local.enabled && var.engine_type == "RabbitMQ" ? 1 : 0
   broker_name                = module.this.id
   deployment_mode            = var.deployment_mode
   engine_type                = var.engine_type
@@ -107,6 +107,60 @@ resource "aws_mq_broker" "default" {
 
   # NOTE: Omit logs block if both general and audit logs disabled:
   # https://github.com/hashicorp/terraform-provider-aws/issues/18067
+  # Also, RabbitMQ does not support audit logs
+  dynamic "logs" {
+    for_each = {
+      for logs, type in local.mq_logs : logs => type
+      if type.general_log_enabled
+    }
+    content {
+      general = logs.value["general_log_enabled"]
+    }
+  }
+
+  maintenance_window_start_time {
+    day_of_week = var.maintenance_day_of_week
+    time_of_day = var.maintenance_time_of_day
+    time_zone   = var.maintenance_time_zone
+  }
+
+  user {
+    username = local.mq_application_user
+    password = local.mq_application_password
+  }
+
+  # Ignore user changes for RabbitMQ as the Users API only applies to ActiveMQ
+  # RabbitMQ users must be managed through the RabbitMQ Management Console
+  lifecycle {
+    ignore_changes = [user]
+  }
+}
+
+# ActiveMQ broker - separate resource without lifecycle ignore for users
+# ActiveMQ supports user management via the AWS MQ Users API
+resource "aws_mq_broker" "activemq" {
+  count                      = local.enabled && var.engine_type == "ActiveMQ" ? 1 : 0
+  broker_name                = module.this.id
+  deployment_mode            = var.deployment_mode
+  engine_type                = var.engine_type
+  engine_version             = var.engine_version
+  host_instance_type         = var.host_instance_type
+  auto_minor_version_upgrade = var.auto_minor_version_upgrade
+  apply_immediately          = var.apply_immediately
+  publicly_accessible        = var.publicly_accessible
+  subnet_ids                 = var.subnet_ids
+  tags                       = module.this.tags
+
+  security_groups = local.broker_security_groups
+
+  dynamic "encryption_options" {
+    for_each = var.encryption_enabled ? ["true"] : []
+    content {
+      kms_key_id        = var.kms_mq_key_arn
+      use_aws_owned_key = var.use_aws_owned_key
+    }
+  }
+
   dynamic "logs" {
     for_each = {
       for logs, type in local.mq_logs : logs => type
@@ -134,12 +188,8 @@ resource "aws_mq_broker" "default" {
     }
   }
 
-  # Application user - only for ActiveMQ (RabbitMQ manages users differently via the broker's web console)
-  dynamic "user" {
-    for_each = var.engine_type == "ActiveMQ" ? ["true"] : []
-    content {
-      username = local.mq_application_user
-      password = local.mq_application_password
-    }
+  user {
+    username = local.mq_application_user
+    password = local.mq_application_password
   }
 }
