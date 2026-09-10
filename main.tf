@@ -134,8 +134,12 @@ resource "aws_mq_broker" "default" {
     }
   }
 
-  user {
-    username = local.mq_application_user
-    password = local.mq_application_password
+  # Application user - only for ActiveMQ (RabbitMQ manages users differently via the broker's web console)
+  dynamic "user" {
+    for_each = var.engine_type == "ActiveMQ" ? ["true"] : []
+    content {
+      username = local.mq_application_user
+      password = local.mq_application_password
+    }
   }
 }
